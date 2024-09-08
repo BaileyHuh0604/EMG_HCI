@@ -1,247 +1,92 @@
-#include <iostream>
-#include <iomanip>
-#include <sstream>
-#include <thread>
-#include <vector>
-#include <deque>
-#include <chrono>
-#include <mutex>
-#include <winrt/Windows.Foundation.h>
-#include <winrt/Windows.Foundation.Collections.h>
-#include <winrt/Windows.Devices.Bluetooth.h>
-#include <winrt/Windows.Devices.Bluetooth.GenericAttributeProfile.h>
-#include <winrt/Windows.Storage.Streams.h>
-#include <winrt/Windows.Devices.Bluetooth.Advertisement.h>
-#include <windows.h>
+import subprocess
+import os
+import threading
+import dearpygui.dearpygui as dpg
 
-using namespace winrt;
-using namespace Windows::Foundation;
-using namespace Windows::Devices::Bluetooth;
-using namespace Windows::Devices::Bluetooth::GenericAttributeProfile;
-using namespace Windows::Storage::Streams;
-using namespace Windows::Devices::Bluetooth::Advertisement;
+# C++ 실행 파일 경로 설정
+cpp_executable = r"C:\Users\허승혁\Downloads\WindowsProject1\Release\WindowsProject1.exe"
 
-bool running = false;
-std::deque<std::vector<int>> emgdata;
-const GUID characteristic_uuid = { 0xbeb5483e, 0x36e1, 0x4688, { 0xb7, 0xf5, 0xea, 0x07, 0x36, 0x1b, 0x26, 0xa8 } };
-std::mutex device_mutex;
-BluetoothLEDevice global_device = nullptr;
-std::chrono::steady_clock::time_point lastClickTime = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+# 상태 저장 변수
+connected = False
+process = None
 
-std::wstring BluetoothAddressToString(uint64_t address) {
-    std::wstringstream ss;
-    ss << std::hex << std::setw(2) << std::setfill(L'0')
-        << ((address >> 40) & 0xFF) << L":"
-        << ((address >> 32) & 0xFF) << L":"
-        << ((address >> 24) & 0xFF) << L":"
-        << ((address >> 16) & 0xFF) << L":"
-        << ((address >> 8) & 0xFF) << L":"
-        << (address & 0xFF);
-    return ss.str();
-}
+def run_cpp_program():
+    global process
+    try:
+        # C++ 실행 파일이 있는 디렉토리를 얻습니다
+        cpp_directory = os.path.dirname(cpp_executable)
 
-uint64_t StringToBluetoothAddress(const std::wstring& address) {
-    uint64_t btAddr = 0;
-    int shift = 40;
-    for (size_t i = 0; i < address.length(); ++i) {
-        if (address[i] != L':') {
-            btAddr += std::stoul(address.substr(i, 2), nullptr, 16) << shift;
-            shift -= 8;
-            i++;
-        }
-    }
-    return btAddr;
-}
+        # subprocess를 사용하여 C++ 실행 파일 실행 (stdin, stdout, stderr 설정)
+        process = subprocess.Popen([cpp_executable],
+                                   stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE,
+                                   text=True,
+                                   cwd=cpp_directory)
 
-void HandleNotification(GattCharacteristic characteristic, GattValueChangedEventArgs args) {
-    // static int preKal0 = 0;
-    // static int preKal1 = 0;
+        # 비동기적으로 프로그램의 출력을 읽음
+        while True:
+            output = process.stdout.readline()
+            if output == '' and process.poll() is not None:
+                break
+            if output:
+                print(output.strip())
+                # "Connected to device" 메시지를 감지
+                if "Connected to device" in output:
+                    update_status("Connected to device")
+                    global connected
+                    connected = True
 
-    try {
-        auto reader = DataReader::FromBuffer(args.CharacteristicValue());
-        std::vector<uint8_t> raw_data;
-        while (reader.UnconsumedBufferLength() > 0) {
-            raw_data.push_back(reader.ReadByte());
-        }
+        # 에러가 있는 경우 출력
+        stderr = process.stderr.read()
+        if stderr:
+            print("Program Errors:\n", stderr)
 
-        if (raw_data.size() == 24) {
-            int timestamp;
-            int emgValues[3];
-            int kal[2];
-            memcpy(&timestamp, raw_data.data(), 4);
-            memcpy(emgValues, raw_data.data() + 4, 12);
-            memcpy(kal, raw_data.data() + 16, 8);
-            std::wcout << timestamp << "\t" << emgValues[0] << "\t" << emgValues[1] << "\t" << emgValues[2] << "\t" << kal[0] << "\t" << kal[1] << "\t" << std::endl;
+    except Exception as e:
+        print(f"Error: {str(e)}")
 
-            // Move the mouse based on kal values
-            INPUT input = { 0 };
-            input.type = INPUT_MOUSE;
-            //input.mi.dx = (abs(kal[0]) > 0) ? ((abs(kal[0] - preKal0) <= 5) ? kal[0] * 1 : kal[0] * 20) : 0;
-            //input.mi.dy = (abs(kal[1]) > 0) ? ((abs(kal[1] - preKal1) <= 5) ? kal[1] * 1 : kal[1] * 20) : 0;
-            input.mi.dx = abs(kal[0]) > 0 ? kal[0] * 20 : 0;
-            input.mi.dy = abs(kal[1]) > 0 ? kal[1] * -40: 0;
-            input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
-            SendInput(1, &input, sizeof(INPUT));
+# 상태 업데이트 함수
+def update_status(status_text):
+    dpg.set_value("status_text", status_text)
 
-            // Check if any emgValue is greater than 2000 to trigger a mouse click
-            auto now = std::chrono::steady_clock::now();
-            if ((emgValues[0] > 19000 ||  emgValues[2] > 19000) &&
-                (now - lastClickTime >= std::chrono::seconds(1))) {
-                INPUT clickInput = { 0 };
-                clickInput.type = INPUT_MOUSE;
-                clickInput.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
-                SendInput(1, &clickInput, sizeof(INPUT));
+# Start 버튼이 눌렸을 때 동작
+def on_start_button():
+    global process
+    if connected and process:
+        try:
+            # C++ 프로그램에 'start' 명령을 stdin에 입력
+            process.stdin.write("start\n")
+            process.stdin.flush()  # 버퍼에 있는 내용을 강제로 플러시
+            print("Start command sent")
+        except Exception as e:
+            print(f"Error sending start command: {str(e)}")
+    else:
+        print("Not connected yet")
 
-                clickInput.mi.dwFlags = MOUSEEVENTF_LEFTUP;
-                SendInput(1, &clickInput, sizeof(INPUT));
+# 백그라운드에서 C++ 프로그램을 실행하는 스레드
+def background_process():
+    thread = threading.Thread(target=run_cpp_program)
+    thread.daemon = True
+    thread.start()
 
-                // Second click (for double click)
-                clickInput.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
-                SendInput(1, &clickInput, sizeof(INPUT));
+# Dear PyGui GUI 구성
+def create_gui():
+    dpg.create_context()
 
-                clickInput.mi.dwFlags = MOUSEEVENTF_LEFTUP;
-                SendInput(1, &clickInput, sizeof(INPUT));
+    with dpg.window(label="C++ Program Controller", width=400, height=200):
+        dpg.add_text("Status: ", tag="status_text")
+        dpg.add_button(label="Start", callback=on_start_button)
 
-                lastClickTime = now; // Update the last click time
-            }
-        }
-        else {
-            std::wcerr << L"Received data of incorrect size." << std::endl;
-        }
-    }
-    catch (const std::exception& e) {
-        std::wcerr << L"Exception: " << e.what() << std::endl;
-    }
-    catch (...) {
-        std::wcerr << L"Unknown exception occurred." << std::endl;
-    }
-}
+    dpg.create_viewport(title='C++ GUI', width=400, height=200)
+    dpg.setup_dearpygui()
+    dpg.show_viewport()
 
-void ReadBLEData(BluetoothLEDevice device) {
-    try {
-        std::wcout << "reading" << std::endl;
-        running = true;
-        auto services_result = device.GetGattServicesAsync().get();
-        if (services_result.Status() != GattCommunicationStatus::Success) {
-            std::wcerr << L"Failed to get GATT services." << std::endl;
-            return;
-        }
+    # C++ 프로그램 백그라운드 실행 시작
+    background_process()
 
-        for (auto service : services_result.Services()) {
-            auto characteristics_result = service.GetCharacteristicsAsync().get();
-            if (characteristics_result.Status() != GattCommunicationStatus::Success)
-                continue;
+    dpg.start_dearpygui()
+    dpg.destroy_context()
 
-            for (auto characteristic : characteristics_result.Characteristics()) {
-                if (characteristic.Uuid() == winrt::guid(characteristic_uuid)) {
-                    characteristic.ValueChanged({ &HandleNotification });
-                    std::wcout << "valuechanged" << std::endl;
-
-                    auto status = characteristic.WriteClientCharacteristicConfigurationDescriptorAsync(
-                        GattClientCharacteristicConfigurationDescriptorValue::Notify
-                    ).get();
-
-                    if (status != GattCommunicationStatus::Success) {
-                        std::wcerr << L"Failed to enable notifications." << std::endl;
-                        return;
-                    }
-
-                    std::wcout << L"Started receiving notifications." << std::endl;
-
-                    while (running) {
-                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                    }
-
-                    std::wcout << "aftersleep" << std::endl;
-                    characteristic.WriteClientCharacteristicConfigurationDescriptorAsync(
-                        GattClientCharacteristicConfigurationDescriptorValue::None
-                    ).get();
-                    std::wcout << "writeasync2" << std::endl;
-                    break;
-                }
-            }
-        }
-    }
-    catch (const std::exception& e) {
-        std::wcerr << L"Exception: " << e.what() << std::endl;
-    }
-    catch (...) {
-        std::wcerr << L"Unknown exception occurred." << std::endl;
-    }
-}
-
-void OnAdvertisementReceived(BluetoothLEAdvertisementWatcher watcher, BluetoothLEAdvertisementReceivedEventArgs args) {
-    try {
-        const std::wstring targetAddress = L"08:d1:f9:fd:40:7e";
-        std::wcout << L"Device found: " << BluetoothAddressToString(args.BluetoothAddress()) << std::endl;
-
-        if (BluetoothAddressToString(args.BluetoothAddress()) == targetAddress) {
-            std::wcout << L"Target device found: " << BluetoothAddressToString(args.BluetoothAddress()) << std::endl;
-            watcher.Stop();
-
-            auto deviceTask = BluetoothLEDevice::FromBluetoothAddressAsync(args.BluetoothAddress());
-            deviceTask.Completed([](IAsyncOperation<BluetoothLEDevice> const& asyncOp, AsyncStatus const status) {
-                if (status == AsyncStatus::Completed) {
-                    BluetoothLEDevice device = asyncOp.GetResults();
-                    std::wcout << L"Connected to device: " << BluetoothAddressToString(device.BluetoothAddress()) << std::endl;
-                    std::lock_guard<std::mutex> lock(device_mutex);
-                    global_device = device;
-                }
-                else {
-                    std::wcerr << L"Failed to connect to the device." << std::endl;
-                }
-                });
-        }
-    }
-    catch (const std::exception& e) {
-        std::wcerr << L"Exception: " << e.what() << std::endl;
-    }
-    catch (...) {
-        std::wcerr << L"Unknown exception occurred." << std::endl;
-    }
-}
-
-int main() {
-    try {
-        const std::wstring targetDeviceAddress = L"08:d1:f9:fd:40:7e";
-
-        init_apartment();
-        std::wcout << L"Waiting for connection..." << std::endl;
-        BluetoothLEAdvertisementWatcher watcher;
-        watcher.Received(OnAdvertisementReceived);
-        watcher.ScanningMode(BluetoothLEScanningMode::Active);
-
-        std::wcout << L"Starting BLE scan..." << std::endl;
-        watcher.Start();
-        std::this_thread::sleep_for(std::chrono::seconds(5));
-        watcher.Stop();
-
-        std::wcout << L"Type 'start' to begin reading BLE data: ";
-        std::wstring input;
-        std::wcin >> input;
-
-        if (input == L"start") {
-            std::wcout << L"Starting BLE data read" << std::endl;
-            std::lock_guard<std::mutex> lock(device_mutex);
-            if (global_device != nullptr) {
-                std::thread ble_thread(ReadBLEData, global_device);
-                ble_thread.join();
-                std::wcout << L"Finished BLE data read" << std::endl;
-            }
-            else {
-                std::wcerr << L"Failed to connect to the BLE device." << std::endl;
-            }
-        }
-        else {
-            std::wcout << L"Invalid input, exiting." << std::endl;
-        }
-    }
-    catch (const std::exception& e) {
-        std::wcerr << L"Exception: " << e.what() << std::endl;
-    }
-    catch (...) {
-        std::wcerr << L"Unknown exception occurred." << std::endl;
-    }
-
-    return 0;
-}
+# GUI 실행
+if __name__ == "__main__":
+    create_gui()
